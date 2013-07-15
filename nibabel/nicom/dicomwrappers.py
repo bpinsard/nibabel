@@ -377,6 +377,14 @@ class Wrapper(object):
         return self._apply_scale_offset(data, scale, offset)
 
     def _apply_scale_offset(self, data, scale, offset):
+        if scale == 1 and offset == 0:
+            mpseq = self.get('RealWorldValueMappingSequence',None)
+            if mpseq == None: # compatibility with pydicom < 0.9.7 ????
+                mpseq = self.get('RealWorldValueMappings',None)
+            if mpseq != None and len(mpseq)>0:
+                mpseq = mpseq[0]
+                scale = mpseq.get('RealWorldValueSlope',1)
+                offset = mpseq.get('RealWorldValueIntercept',0)
         # a little optimization.  If we are applying either the scale or
         # the offset, we need to allow upcasting to float.
         if scale != 1:
