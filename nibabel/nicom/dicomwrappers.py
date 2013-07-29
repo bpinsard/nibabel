@@ -560,6 +560,28 @@ class MultiframeWrapper(Wrapper):
         data = data.reshape(shape, order='F')
         return self._scale_data(data)
 
+    def iter_slices(self, slice_order=None):
+        # todo: try to guess slice order, timing parameters
+        # from dicom if possible 
+        shape = self.image_shape
+        trigger_time = None
+        if trigger_time == None:
+            tr = self.shared.MRTimingAndRelatedParametersSequence[0].RepetitionTime.real
+            trigger_time= np.linspace(0,tr,shape[2]+1)[:-1]
+        if slice_order == None:
+            slice_order = np.arange(shape[2])
+        slice2idx = np.argsort(slice_order)
+        data = self.get_data()
+        for s in np.ndindex(*shape[2:]):
+            if len(s) > 1:
+                frame = self.frames[s[0]+shape[2]*s[1]]
+                slice_data = data[...,slice2idx[s[0]],s[1]]
+            else:
+                frame = self.frames[s[0]]
+                slice_data = data[...,slice2idx[s[0]]]
+            ipp = self.get_affine().dot([0,0,s[0],1])[:3]
+            yield trigger_time[s[0]], ipp , slice_data
+
     def _scale_data(self, data):
         pix_trans = getattr(
             self.frames[0], 'PixelValueTransformationSequence', None)
@@ -847,6 +869,21 @@ class MosaicWrapper(SiemensWrapper):
         # delete any padding slices
         v3 = v3[..., :n_mosaic]
         return self._scale_data(v3)
+
+
+    def iter_slices(self, slice_order=None):
+        # todo: try to guess slice order, timing parameters
+        # from dicom if possible 
+        shape = self.image_shape
+        trigger_time = csar.get_vector(
+            self.csa_header,'MosaicRefAcqTimes',shape[2])
+        if slice_order == None:
+            slice_order = np.argsort(trigger_time)
+        slice2idx = np.argsort(slice_order)
+        data = self.get_data()
+        for t, s in zip(trigger_time, slice_order):
+            ipp = self.get_affine().dot([0,0,s,1])[:3]
+            yield t, ipp, data[...,s]
 
 
 def none_or_close(val1, val2, rtol=1e-5, atol=1e-6):
