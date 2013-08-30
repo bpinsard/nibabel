@@ -88,7 +88,7 @@ from .volumeutils import (native_code, swapped_code, make_dt_codes,
                           shape_zoom_affine, array_from_file, seek_tell,
                           apply_read_scaling)
 from .arraywriters import make_array_writer, get_slope_inter, WriterError
-from .wrapstruct import WrapStruct
+from .wrapstruct import LabeledWrapStruct
 from .spatialimages import (HeaderDataError, HeaderTypeError,
                             SpatialImage)
 from .fileholders import copy_file_map
@@ -169,7 +169,7 @@ _dtdefs = ( # code, conversion function, equivalent dtype, aliases
 data_type_codes = make_dt_codes(_dtdefs)
 
 
-class AnalyzeHeader(WrapStruct):
+class AnalyzeHeader(LabeledWrapStruct):
     ''' Class for basic analyze header
 
     Implements zoom-only setting of affine transform, and no image
@@ -186,6 +186,8 @@ class AnalyzeHeader(WrapStruct):
     # data scaling capabilities
     has_data_slope = False
     has_data_intercept = False
+
+    sizeof_hdr = 348
 
     def __init__(self,
                  binaryblock=None,
@@ -323,7 +325,7 @@ class AnalyzeHeader(WrapStruct):
         '''
         dim0 = int(hdr['dim'][0])
         if dim0 == 0:
-            if hdr['sizeof_hdr'] == 1543569408:
+            if hdr['sizeof_hdr'].byteswap() == klass.sizeof_hdr:
                 return swapped_code
             return native_code
         elif 1 <= dim0 <= 7:
@@ -335,44 +337,13 @@ class AnalyzeHeader(WrapStruct):
         ''' Return header data for empty header with given endianness
         '''
         hdr_data = super(AnalyzeHeader, klass).default_structarr(endianness)
-        hdr_data['sizeof_hdr'] = 348
+        hdr_data['sizeof_hdr'] = klass.sizeof_hdr
         hdr_data['dim'] = 1
         hdr_data['dim'][0] = 0
         hdr_data['pixdim'] = 1
         hdr_data['datatype'] = 16 # float32
         hdr_data['bitpix'] = 32
         return hdr_data
-
-    def get_value_label(self, fieldname):
-        ''' Returns label for coded field
-
-        A coded field is an int field containing codes that stand for
-        discrete values that also have string labels.
-
-        Parameters
-        ----------
-        fieldname : str
-           name of header field to get label for
-
-        Returns
-        -------
-        label : str
-           label for code value in header field `fieldname`
-
-        Raises
-        ------
-        ValueError : if field is not coded
-
-        Examples
-        --------
-        >>> hdr = AnalyzeHeader()
-        >>> hdr.get_value_label('datatype')
-        'float32'
-        '''
-        if not fieldname in self._field_recoders:
-            raise ValueError('%s not a coded field' % fieldname)
-        code = int(self._structarr[fieldname])
-        return self._field_recoders[fieldname].label[code]
 
     @classmethod
     def from_header(klass, header=None, check=True):
@@ -621,11 +592,18 @@ class AnalyzeHeader(WrapStruct):
         ndims = len(shape)
         dims[:] = 1
         dims[0] = ndims
-        dims[1:ndims+1] = shape
-        # Check that dimensions fit
-        if not np.all(dims[1:ndims+1] == shape):
+        try:
+            dims[1:ndims+1] = shape
+        except (ValueError, OverflowError):
+            # numpy 1.4.1 at least generates a ValueError from trying to set a
+            # python long into an int64 array (dims are int64 for nifti2)
+            values_fit = False
+        else:
+            values_fit = np.all(dims[1:ndims+1] == shape)
+        # Error if we did not succeed setting dimensions
+        if not values_fit:
             raise HeaderDataError('shape %s does not fit in dim datatype' %
-                                   (shape,))
+                                  (shape,))
         self._structarr['pixdim'][ndims+1:] = 1.0
 
     def get_base_affine(self):
@@ -758,16 +736,16 @@ class AnalyzeHeader(WrapStruct):
 
     ''' Check functions in format expected by BatteryRunner class '''
 
-    @staticmethod
-    def _chk_sizeof_hdr(hdr, fix=False):
+    @classmethod
+    def _chk_sizeof_hdr(klass, hdr, fix=False):
         rep = Report(HeaderDataError)
-        if hdr['sizeof_hdr'] == 348:
+        if hdr['sizeof_hdr'] == klass.sizeof_hdr:
             return hdr, rep
         rep.problem_level = 30
-        rep.problem_msg = 'sizeof_hdr should be 348'
+        rep.problem_msg = 'sizeof_hdr should be ' + str(klass.sizeof_hdr)
         if fix:
-            hdr['sizeof_hdr'] = 348
-            rep.fix_msg = 'set sizeof_hdr to 348'
+            hdr['sizeof_hdr'] = klass.sizeof_hdr
+            rep.fix_msg = 'set sizeof_hdr to ' + str(klass.sizeof_hdr)
         return hdr, rep
 
     @classmethod

@@ -34,7 +34,7 @@ from numpy.testing import (assert_array_equal,
 from ..testing import (assert_equal, assert_not_equal, assert_true,
                        assert_false, assert_raises, data_path)
 
-from .test_wrapstruct import _TestWrapStructBase
+from .test_wrapstruct import _TestLabeledWrapStruct
 from . import test_spatialimages as tsi
 
 header_file = os.path.join(data_path, 'analyze.hdr')
@@ -48,9 +48,15 @@ def _write_data(hdr, data, fileobj):
     array_to_file(data, fileobj, out_dtype, offset)
 
 
-class TestAnalyzeHeader(_TestWrapStructBase):
+class TestAnalyzeHeader(_TestLabeledWrapStruct):
     header_class = AnalyzeHeader
     example_file = header_file
+    sizeof_hdr = AnalyzeHeader.sizeof_hdr
+
+    def get_bad_bb(self):
+        # A value for the binary block that should raise an error
+        # Completely zeros binary block (nearly) always (fairly) bad
+        return b'\x00' * self.header_class.template_dtype.itemsize
 
     def test_general_init(self):
         super(TestAnalyzeHeader, self).test_general_init()
@@ -69,12 +75,12 @@ class TestAnalyzeHeader(_TestWrapStructBase):
         assert_equal(hdr.get_zooms(), (1.0,))
 
     def test_header_size(self):
-        assert_equal(self.header_class.template_dtype.itemsize, 348)
+        assert_equal(self.header_class.template_dtype.itemsize, self.sizeof_hdr)
 
     def test_empty(self):
         hdr = self.header_class()
-        assert_true(len(hdr.binaryblock) == 348)
-        assert_true(hdr['sizeof_hdr'] == 348)
+        assert_true(len(hdr.binaryblock) == self.sizeof_hdr)
+        assert_true(hdr['sizeof_hdr'] == self.sizeof_hdr)
         assert_true(np.all(hdr['dim'][1:] == 1))
         assert_true(hdr['dim'][0] == 0        )
         assert_true(np.all(hdr['pixdim'] == 1))
@@ -92,7 +98,8 @@ class TestAnalyzeHeader(_TestWrapStructBase):
         assert_equal(self._dxer(hdr_t), '')
         hdr = hdr_t.copy()
         hdr['sizeof_hdr'] = 1
-        assert_equal(self._dxer(hdr), 'sizeof_hdr should be 348')
+        assert_equal(self._dxer(hdr), 'sizeof_hdr should be ' +
+                     str(self.sizeof_hdr))
         hdr = hdr_t.copy()
         hdr['datatype'] = 0
         assert_equal(self._dxer(hdr), 'data code 0 not supported\n'
@@ -112,9 +119,10 @@ class TestAnalyzeHeader(_TestWrapStructBase):
         hdr = HC()
         hdr['sizeof_hdr'] = 350 # severity 30
         fhdr, message, raiser = self.log_chk(hdr, 30)
-        assert_equal(fhdr['sizeof_hdr'], 348)
-        assert_equal(message, 'sizeof_hdr should be 348; '
-                           'set sizeof_hdr to 348')
+        assert_equal(fhdr['sizeof_hdr'], self.sizeof_hdr)
+        assert_equal(message,
+                     'sizeof_hdr should be {0}; set sizeof_hdr to {0}'.format(
+                     self.sizeof_hdr))
         assert_raises(*raiser)
         # RGB datatype does not raise error
         hdr = HC()
@@ -389,7 +397,7 @@ class TestAnalyzeHeader(_TestWrapStructBase):
         fileobj = open(self.example_file, 'rb')
         hdr = self.header_class.from_fileobj(fileobj, check=False)
         assert_equal(hdr.endianness, '>')
-        assert_equal(hdr['sizeof_hdr'], 348)
+        assert_equal(hdr['sizeof_hdr'], self.sizeof_hdr)
 
     def test_orientation(self):
         # Test flips
@@ -525,6 +533,7 @@ def test_data_code_error():
 
 class TestAnalyzeImage(tsi.TestSpatialImage):
     image_class = AnalyzeImage
+    can_save = True
 
     def test_data_hdr_cache(self):
         # test the API for loaded images, such that the data returned

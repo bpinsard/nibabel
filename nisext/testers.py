@@ -29,6 +29,8 @@ the Makefile targets from nibabel::
 
 '''
 
+from __future__ import print_function
+
 import os
 import sys
 from os.path import join as pjoin, abspath
@@ -45,7 +47,7 @@ HAVE_PUTENV = hasattr(os, 'putenv')
 
 PY_LIB_SDIR = 'pylib'
 
-def back_tick(cmd, ret_err=False):
+def back_tick(cmd, ret_err=False, as_str=True):
     """ Run command `cmd`, return stdout, or stdout, stderr if `ret_err`
 
     Roughly equivalent to ``check_output`` in Python 2.7
@@ -57,6 +59,8 @@ def back_tick(cmd, ret_err=False):
     ret_err : bool, optional
         If True, return stderr in addition to stdout.  If False, just return
         stdout
+    as_str : bool, optional
+        Whether to decode outputs to unicode string on exit.
 
     Returns
     -------
@@ -79,9 +83,14 @@ def back_tick(cmd, ret_err=False):
     if retcode != 0:
         raise RuntimeError(cmd + ' process returned code %d' % retcode)
     out = out.strip()
+    if as_str:
+        out = out.decode('latin-1')
     if not ret_err:
         return out
-    return out, err.strip()
+    err = err.strip()
+    if as_str:
+        err = err.decode('latin-1')
+    return out, err
 
 
 def run_mod_cmd(mod_name, pkg_path, cmd, script_dir=None, print_location=True):
@@ -119,10 +128,12 @@ def run_mod_cmd(mod_name, pkg_path, cmd, script_dir=None, print_location=True):
                        'environ[\'PATH\'] = \'%s%s\' + environ[\'PATH\'];'
                        % (script_dir, os.path.pathsep))
         # Need to add the python path for the scripts to pick up our package in
-        # their environment
-        py_pth_add = ('environ[\'PYTHONPATH\'] = \'%s%s\' '
-                      '+ environ[\'PYTHONPATH\'];'
-                       % (pkg_path, os.path.pathsep))
+        # their environment. Consider that PYTHONPATH may not be set
+        py_pth_add = (
+            'PYPTH = environ.get(\'PYTHONPATH\'); '
+            'environ[\'PYTHONPATH\'] = \'%s%s\'  + PYPTH '
+            'if PYPTH else \'%s\';'
+            % (pkg_path, os.path.pathsep, pkg_path))
     if print_location:
         p_loc = 'print(%s.__file__);' % mod_name
     else:
@@ -399,13 +410,13 @@ def check_files(mod_name, repo_path=None, scripts_sdir='bin'):
     finally:
         shutil.rmtree(install_path)
     if lib_misses:
-        print "Missed library files: ", ', '.join(lib_misses)
+        print("Missed library files: ", ', '.join(lib_misses))
     else:
-        print "You got all the library files"
+        print("You got all the library files")
     if script_misses:
-        print "Missed script files: ", ', '.join(script_misses)
+        print("Missed script files: ", ', '.join(script_misses))
     else:
-        print "You got all the script files"
+        print("You got all the script files")
     return len(lib_misses) > 0 or len(script_misses) > 0
 
 
