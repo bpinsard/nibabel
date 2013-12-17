@@ -25,6 +25,7 @@ with methods::
     .get/set_data_shape
     .get/set_data_dtype
     .get/set_zooms
+    .get/set_data_offset
     .get_base_affine()
     .get_best_affine()
     .data_to_fileobj
@@ -682,6 +683,11 @@ class AnalyzeHeader(LabeledWrapStruct):
     def as_analyze_map(self):
         return self
 
+    def set_data_offset(self, offset):
+        """ Set offset into data file to read data
+        """
+        self._structarr['vox_offset'] = offset
+
     def get_data_offset(self):
         ''' Return offset into data file to read data
 
@@ -827,6 +833,14 @@ class AnalyzeImage(SpatialImage):
 
     ImageArrayProxy = ArrayProxy
 
+    def __init__(self, dataobj, affine, header=None,
+                 extra=None, file_map=None):
+        super(AnalyzeImage, self).__init__(
+            dataobj, affine, header, extra, file_map)
+        # Reset consumable values
+        self._header.set_data_offset(0)
+    __init__.__doc__ = SpatialImage.__init__.__doc__
+
     def get_header(self):
         ''' Return header
         '''
@@ -898,7 +912,7 @@ class AnalyzeImage(SpatialImage):
             file_map = self.file_map
         data = self.get_data()
         self.update_header()
-        hdr = self.get_header()
+        hdr = self._header
         out_dtype = self.get_data_dtype()
         arr_writer = make_array_writer(data,
                                        out_dtype,
@@ -913,6 +927,9 @@ class AnalyzeImage(SpatialImage):
             imgf = hdrf
         else:
             imgf = img_fh.get_prepare_fileobj(mode='wb')
+        # Store consumable values for later restore
+        offset = hdr.get_data_offset()
+        # Set values as necessary
         slope, inter = get_slope_inter(arr_writer)
         self._write_header(hdrf, hdr, slope, inter)
         # Write image
@@ -927,6 +944,8 @@ class AnalyzeImage(SpatialImage):
             imgf.close_if_mine()
         self._header = hdr
         self.file_map = file_map
+        # Restore any changed consumable values
+        hdr.set_data_offset(offset)
 
 
 load = AnalyzeImage.load

@@ -18,7 +18,8 @@ import numpy as np
 
 from ..nifti1 import data_type_codes, xform_codes, intent_codes
 from .gifti import (GiftiMetaData, GiftiImage, GiftiLabel, GiftiLabelTable,
-                    GiftiNVPairs, GiftiDataArray, GiftiCoordSystem)
+                    GiftiNVPairs, GiftiDataArray, GiftiCoordSystem,
+                    base64_decodebytes)
 from .util import (array_index_order_codes, gifti_encoding_codes,
                    gifti_endian_codes)
 
@@ -39,7 +40,7 @@ def read_data_block(encoding, endian, ordering, datatype, shape, data):
         return da
     elif enclabel == 'B64BIN':
         # GIFTI_ENCODING_B64BIN
-        dec = base64.decodestring(data.encode('ascii'))
+        dec = base64_decodebytes(data.encode('ascii'))
         dt = data_type_codes.type[datatype]
         sh = tuple(shape)
         newarr = np.fromstring(dec, dtype = dt)
@@ -49,7 +50,7 @@ def read_data_block(encoding, endian, ordering, datatype, shape, data):
         # GIFTI_ENCODING_B64GZ
         # convert to bytes array for python 3.2
         # http://diveintopython3.org/strings.html#byte-arrays
-        dec = base64.decodestring(data.encode('ascii'))
+        dec = base64_decodebytes(data.encode('ascii'))
         zdec = zlib.decompress(dec)
         dt = data_type_codes.type[datatype]
         sh = tuple(shape)
@@ -334,24 +335,24 @@ def parse_gifti_file(fname, buffer_size = None):
         buffer_sz_val =  35000000
     else:
         buffer_sz_val = buffer_size
-    datasource = open(fname,'rb')
-    parser = ParserCreate()
-    parser.buffer_text = True
-    try:
-        parser.buffer_size = buffer_sz_val
-    except AttributeError:
-        if not buffer_size is None:
-            raise ValueError('Cannot set buffer size for parser')
-    HANDLER_NAMES = ['StartElementHandler',
-                     'EndElementHandler',
-                     'CharacterDataHandler']
-    out = Outputter()
-    for name in HANDLER_NAMES:
-        setattr(parser, name, getattr(out, name))
-    try:
-        parser.ParseFile(datasource)
-    except ExpatError:
-        print('An expat error occured while parsing the  Gifti file.')
+    with open(fname,'rb') as datasource:
+        parser = ParserCreate()
+        parser.buffer_text = True
+        try:
+            parser.buffer_size = buffer_sz_val
+        except AttributeError:
+            if not buffer_size is None:
+                raise ValueError('Cannot set buffer size for parser')
+        HANDLER_NAMES = ['StartElementHandler',
+                         'EndElementHandler',
+                         'CharacterDataHandler']
+        out = Outputter()
+        for name in HANDLER_NAMES:
+            setattr(parser, name, getattr(out, name))
+        try:
+            parser.ParseFile(datasource)
+        except ExpatError:
+            print('An expat error occured while parsing the  Gifti file.')
     # Reality check for pending data
     assert out.pending_data is False
     # update filename
