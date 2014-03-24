@@ -4,6 +4,7 @@ Most routines work round some numpy oddities in floating point precision and
 casting.  Others work round numpy casting to and from python ints
 """
 
+from numbers import Integral
 from platform import processor, machine
 
 import numpy as np
@@ -431,7 +432,7 @@ def int_to_float(val, flt_type):
     # The following works around a nasty numpy 1.4.1 bug such that:
     # >>> int(np.uint32(2**32-1)
     # -1
-    if not isinstance(val, int):
+    if not isinstance(val, Integral):
         val = int(str(val))
     faval = np.longdouble(0)
     while val != 0:
@@ -691,7 +692,8 @@ def ok_floats():
 
     Remove longdouble if it has no higher precision than float64
     """
-    floats = np.sctypes['float']
+    # copy float list so we don't change the numpy global
+    floats = np.sctypes['float'][:]
     if best_float() != np.longdouble and np.longdouble in floats:
         floats.remove(np.longdouble)
     return sorted(floats, key=lambda f : type_info(f)['nmant'])

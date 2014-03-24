@@ -153,6 +153,7 @@ class HeaderTypeError(Exception):
 class Header(object):
     ''' Template class to implement header protocol '''
     default_x_flip = True
+    data_layout = 'F'
 
     def __init__(self,
                  data_dtype=np.float32,
@@ -246,18 +247,61 @@ class Header(object):
 
     get_best_affine = get_base_affine
 
-    def data_to_fileobj(self, data, fileobj):
-        ''' Write image data to file in fortran order '''
+    def data_to_fileobj(self, data, fileobj, rescale=True):
+        ''' Write array data `data` as binary to `fileobj`
+
+        Parameters
+        ----------
+        data : array-like
+            data to write
+        fileobj : file-like object
+            file-like object implementing 'write'
+        rescale : {True, False}, optional
+            Whether to try and rescale data to match output dtype specified by
+            header. For this minimal header, `rescale` has no effect
+        '''
+        data = np.asarray(data)
         dtype = self.get_data_dtype()
-        fileobj.write(data.astype(dtype).tostring(order='F'))
+        fileobj.write(data.astype(dtype).tostring(order=self.data_layout))
 
     def data_from_fileobj(self, fileobj):
-        ''' Read data in fortran order '''
+        ''' Read binary image data from `fileobj` '''
         dtype = self.get_data_dtype()
         shape = self.get_data_shape()
         data_size = int(np.prod(shape) * dtype.itemsize)
         data_bytes = fileobj.read(data_size)
-        return np.ndarray(shape, dtype, data_bytes, order='F')
+        return np.ndarray(shape, dtype, data_bytes, order=self.data_layout)
+
+
+def supported_np_types(obj):
+    """ Numpy data types that instance `obj` supports
+
+    Parameters
+    ----------
+    obj : object
+        Object implementing `get_data_dtype` and `set_data_dtype`.  The object
+        should raise ``HeaderDataError`` for setting unsupported dtypes. The
+        object will likely be a header or a :class:`SpatialImage`
+
+    Returns
+    -------
+    np_types : set
+        set of numpy types that `obj` supports
+    """
+    dt = obj.get_data_dtype()
+    supported = []
+    for name, np_types in np.sctypes.items():
+        for np_type in np_types:
+            try:
+                obj.set_data_dtype(np_type)
+            except HeaderDataError:
+                continue
+            # Did set work?
+            if np.dtype(obj.get_data_dtype()) == np.dtype(np_type):
+                supported.append(np_type)
+    # Reset original header dtype
+    obj.set_data_dtype(dt)
+    return set(supported)
 
 
 class ImageDataError(Exception):

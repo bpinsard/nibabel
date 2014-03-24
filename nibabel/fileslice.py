@@ -3,6 +3,7 @@
 from __future__ import division
 
 import operator
+from numbers import Integral
 from mmap import mmap
 
 from .externals.six.moves import reduce
@@ -44,7 +45,7 @@ def is_fancy(sliceobj):
     return False
 
 
-def canonical_slicers(sliceobj, shape):
+def canonical_slicers(sliceobj, shape, check_inds=True):
     """ Return canonical version of `sliceobj` for array shape `shape`
 
     `sliceobj` is a slicer for an array ``A`` implied by `shape`.
@@ -64,6 +65,8 @@ def canonical_slicers(sliceobj, shape):
         something that can be used to slice an array as in ``arr[sliceobj]``
     shape : sequence
         shape of array that will be indexed by `sliceobj`
+    check_inds : {True, False}, optional
+        Whether to check if integer indices are out of bounds
 
     Returns
     -------
@@ -108,7 +111,7 @@ def canonical_slicers(sliceobj, shape):
         else:
             if slicer < 0:
                 slicer = dim_len + slicer
-            elif slicer >= dim_len:
+            elif check_inds and slicer >= dim_len:
                 raise ValueError('Integer index %d to large' % slicer)
         can_slicers.append(slicer)
     # Fill out any missing dimensions
@@ -117,9 +120,38 @@ def canonical_slicers(sliceobj, shape):
     return tuple(can_slicers)
 
 
+def slice2outax(ndim, sliceobj):
+    """ Matching output axes for input array ndim `ndim` and slice `sliceobj`
+
+    Parameters
+    ----------
+    ndim : int
+        number of axes in input array
+    sliceobj : object
+        something that can be used to slice an array as in ``arr[sliceobj]``
+
+    Returns
+    -------
+    out_ax_inds : tuple
+        Say ``A` is a (pretend) input array of `ndim` dimensions. Say ``B =
+        A[sliceobj]``.  `out_ax_inds` has one value per axis in ``A`` giving
+        corresponding axis in ``B``.
+    """
+    sliceobj = canonical_slicers(sliceobj, [1] * ndim, check_inds=False)
+    out_ax_no = 0
+    out_ax_inds = []
+    for obj in sliceobj:
+        if isinstance(obj, Integral):
+            out_ax_inds.append(None)
+            continue
+        if not obj is None:
+            out_ax_inds.append(out_ax_no)
+        out_ax_no += 1
+    return tuple(out_ax_inds)
+
+
 def slice2len(slicer, in_len):
     """ Output length after slicing original length `in_len` with `slicer`
-
     Parameters
     ----------
     slicer : slice object
@@ -288,7 +320,7 @@ def threshold_heuristic(slicer,
     for the maximum skip distance seemed to work well, as measured by times on
     ``nibabel.benchmarks.bench_fileslice``
     """
-    if isinstance(slicer, int):
+    if isinstance(slicer, Integral):
         gap_size = (dim_len - 1) * stride
         return 'full' if gap_size <= skip_thresh else None
     step_size = abs(slicer.step) * stride
@@ -485,7 +517,7 @@ def optimize_read_slicers(sliceobj, in_shape, itemsize, heuristic):
         array before passing to this function.
     itemsize : int
         element size in array (bytes)
-    heuristic : callable, optional
+    heuristic : callable
         function taking slice object, axis length, and stride length as
         arguments, returning one of 'full', 'contiguous', None.  See
         :func:`optimize_slicer`; see :func:`threshold_heuristic` for an example.
@@ -522,7 +554,7 @@ def optimize_read_slicers(sliceobj, in_shape, itemsize, heuristic):
             slicer, dim_len, all_full, is_last, stride, heuristic)
         read_slicers.append(read_slicer)
         all_full = all_full and read_slicer == slice(None)
-        if not isinstance(read_slicer, int):
+        if not isinstance(read_slicer, Integral):
             post_slicers.append(post_slicer)
         stride *= dim_len
     return tuple(read_slicers), tuple(post_slicers)
@@ -559,7 +591,7 @@ def slicers2segments(read_slicers, in_shape, offset, itemsize):
             continue
         dim_len = in_shape[real_no]
         real_no += 1
-        is_int = isinstance(read_slicer, int)
+        is_int = isinstance(read_slicer, Integral)
         if not is_int: # slicer is (now) a slice
             # make slice full (it will always be positive)
             read_slicer = fill_slicer(read_slicer, dim_len)
