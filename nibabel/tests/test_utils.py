@@ -9,6 +9,8 @@
 ''' Test for volumeutils module '''
 from __future__ import division
 
+from os.path import exists
+
 from ..externals.six import BytesIO
 import tempfile
 import warnings
@@ -23,6 +25,7 @@ from ..volumeutils import (array_from_file,
                            array_to_file,
                            allopen, # for backwards compatibility
                            BinOpener,
+                           fname_ext_ul_case,
                            calculate_scale,
                            can_cast,
                            write_zeros,
@@ -37,6 +40,7 @@ from ..volumeutils import (array_from_file,
                            shape_zoom_affine,
                            rec2dict,
                            _dt_min_max,
+                           _write_data,
                           )
 
 from ..casting import (floor_log2, type_info, best_float, OK_FLOATS,
@@ -47,7 +51,8 @@ from numpy.testing import (assert_array_almost_equal,
 
 from nose.tools import assert_true, assert_equal, assert_raises
 
-from ..testing import assert_dt_equal, assert_allclose_safely
+from ..testing import (assert_dt_equal, assert_allclose_safely,
+                       suppress_warnings)
 
 #: convenience variables for numpy types
 FLOAT_TYPES = np.sctypes['float']
@@ -124,12 +129,17 @@ def test_array_to_file():
         for code in '<>':
             ndt = dt.newbyteorder(code)
             for allow_intercept in (True, False):
-                scale, intercept, mn, mx = calculate_scale(arr,
-                                                           ndt,
-                                                           allow_intercept)
+                with suppress_warnings():  # deprecated
+                    scale, intercept, mn, mx = \
+                        calculate_scale(arr, ndt, allow_intercept)
                 data_back = write_return(arr, str_io, ndt,
                                          0, intercept, scale)
                 assert_array_almost_equal(arr, data_back)
+    # Test array-like
+    str_io = BytesIO()
+    array_to_file(arr.tolist(), str_io, float)
+    data_back = array_from_file(arr.shape, float, str_io)
+    assert_array_almost_equal(arr, data_back)
 
 
 def test_a2f_intercept_scale():
@@ -187,7 +197,8 @@ def test_a2f_min_max():
     assert_array_equal(data_back * -0.5 + 1, [1, 1, 2, 2])
     # Check complex numbers
     arr = np.arange(4, dtype=np.complex64) + 100j
-    data_back = write_return(arr, str_io, out_dt, 0, 0, 1, 1, 2)
+    with suppress_warnings():  # cast to real
+        data_back = write_return(arr, str_io, out_dt, 0, 0, 1, 1, 2)
     assert_array_equal(data_back, [1, 1, 2, 2])
 
 
@@ -306,8 +317,9 @@ def test_a2f_big_scalers():
     # We check whether the routine correctly clips extreme values.
     # We need nan2zero=False because we can't represent 0 in the input, given
     # the scaling and the output range.
-    array_to_file(arr, str_io, np.int8, intercept=np.float32(2**120),
-                  nan2zero=False)
+    with suppress_warnings():  # overflow
+        array_to_file(arr, str_io, np.int8, intercept=np.float32(2**120),
+                      nan2zero=False)
     data_back = array_from_file(arr.shape, np.int8, str_io)
     assert_array_equal(data_back, [-128, -128, 127])
     # Scales also if mx, mn specified? Same notes and complaints as for the test
@@ -319,8 +331,9 @@ def test_a2f_big_scalers():
     assert_array_equal(data_back, [-128, -128, 127])
     # And if slope causes overflow?
     str_io.seek(0)
-    array_to_file(arr, str_io, np.int8, divslope=np.float32(0.5))
-    data_back = array_from_file(arr.shape, np.int8, str_io)
+    with suppress_warnings():  # overflow in divide
+        array_to_file(arr, str_io, np.int8, divslope=np.float32(0.5))
+        data_back = array_from_file(arr.shape, np.int8, str_io)
     assert_array_equal(data_back, [-128, 0, 127])
     # with mn, mx specified?
     str_io.seek(0)
@@ -369,25 +382,26 @@ def test_a2f_scaled_unscaled():
                           divslope=divslope,
                           intercept=intercept)
             continue
-        back_arr = write_return(arr, fobj,
-                                out_dtype=out_dtype,
-                                divslope=divslope,
-                                intercept=intercept)
-        exp_back = arr.copy()
-        if out_dtype in IUINT_TYPES:
-            exp_back[np.isnan(exp_back)] = 0
-        if in_dtype not in COMPLEX_TYPES:
-            exp_back = exp_back.astype(float)
-        if intercept != 0:
-            exp_back -= intercept
-        if divslope != 1:
-            exp_back /= divslope
-        if out_dtype in IUINT_TYPES:
-            exp_back = np.round(exp_back).astype(float)
-            exp_back = np.clip(exp_back, *shared_range(float, out_dtype))
-            exp_back = exp_back.astype(out_dtype)
-        else:
-            exp_back = exp_back.astype(out_dtype)
+        with suppress_warnings():  # cast to real
+            back_arr = write_return(arr, fobj,
+                                    out_dtype=out_dtype,
+                                    divslope=divslope,
+                                    intercept=intercept)
+            exp_back = arr.copy()
+            if out_dtype in IUINT_TYPES:
+                exp_back[np.isnan(exp_back)] = 0
+            if in_dtype not in COMPLEX_TYPES:
+                exp_back = exp_back.astype(float)
+            if intercept != 0:
+                exp_back -= intercept
+            if divslope != 1:
+                exp_back /= divslope
+            if out_dtype in IUINT_TYPES:
+                exp_back = np.round(exp_back).astype(float)
+                exp_back = np.clip(exp_back, *shared_range(float, out_dtype))
+                exp_back = exp_back.astype(out_dtype)
+            else:
+                exp_back = exp_back.astype(out_dtype)
         # Allow for small differences in large numbers
         assert_allclose_safely(back_arr, exp_back)
 
@@ -819,6 +833,31 @@ def test_BinOpener():
             assert_true(hasattr(fobj.fobj, 'compress'))
 
 
+def test_fname_ext_ul_case():
+    # Get filename ignoring the case of the filename extension
+    with InTemporaryDirectory():
+        with open('afile.TXT', 'wt') as fobj:
+            fobj.write('Interesting information')
+        # OSX usually has case-insensitive file systems; Windows also
+        os_cares_case = not exists('afile.txt')
+        with open('bfile.txt', 'wt') as fobj:
+            fobj.write('More interesting information')
+        # If there is no file, the case doesn't change
+        assert_equal(fname_ext_ul_case('nofile.txt'), 'nofile.txt')
+        assert_equal(fname_ext_ul_case('nofile.TXT'), 'nofile.TXT')
+        # If there is a file, accept upper or lower case for ext
+        if os_cares_case:
+            assert_equal(fname_ext_ul_case('afile.txt'), 'afile.TXT')
+            assert_equal(fname_ext_ul_case('bfile.TXT'), 'bfile.txt')
+        else:
+            assert_equal(fname_ext_ul_case('afile.txt'), 'afile.txt')
+            assert_equal(fname_ext_ul_case('bfile.TXT'), 'bfile.TXT')
+        assert_equal(fname_ext_ul_case('afile.TXT'), 'afile.TXT')
+        assert_equal(fname_ext_ul_case('bfile.txt'), 'bfile.txt')
+        # Not mixed case though
+        assert_equal(fname_ext_ul_case('afile.TxT'), 'afile.TxT')
+
+
 def test_allopen():
     # This import into volumeutils is for compatibility.  The code is the
     # ``openers`` module.
@@ -941,3 +980,70 @@ def test_dtypes():
     assert_raises(ValueError, make_dt_codes, dt_defs)
     dt_defs = ((16, 'float32', np.float32, 'ASTRING', 'ANOTHERSTRING'),)
     assert_raises(ValueError, make_dt_codes, dt_defs)
+
+
+def test__write_data():
+    # Test private utility function for writing data
+    itp = itertools.product
+
+    def assert_rt(data,
+                  shape,
+                  out_dtype,
+                  order='F',
+                  in_cast = None,
+                  pre_clips = None,
+                  inter = 0.,
+                  slope = 1.,
+                  post_clips = None,
+                  nan_fill = None):
+        sio = BytesIO()
+        to_write = data.reshape(shape)
+        # to check that we didn't modify in-place
+        backup = to_write.copy()
+        nan_positions = np.isnan(to_write)
+        have_nans = np.any(nan_positions)
+        if have_nans and nan_fill is None and not out_dtype.type == 'f':
+            raise ValueError("Cannot handle this case")
+        _write_data(to_write, sio, out_dtype, order, in_cast, pre_clips, inter,
+                    slope, post_clips, nan_fill)
+        arr = np.ndarray(shape, out_dtype, buffer=sio.getvalue(),
+                         order=order)
+        expected = to_write.copy()
+        if have_nans and not nan_fill is None:
+            expected[nan_positions] = nan_fill * slope + inter
+        assert_array_equal(arr * slope + inter, expected)
+        assert_array_equal(to_write, backup)
+
+    # check shape writing
+    for shape, order in itp(
+        ((24,), (24, 1), (24, 1, 1), (1, 24), (1, 1, 24), (2, 3, 4),
+         (6, 1, 4), (1, 6, 4), (6, 4, 1)),
+        'FC'):
+        assert_rt(np.arange(24), shape, np.int16, order=order)
+
+    # check defense against modifying data in-place
+    for in_cast, pre_clips, inter, slope, post_clips, nan_fill in itp(
+        (None, np.float32),
+        (None, (-1, 25)),
+        (0., 1.),
+        (1., 0.5),
+        (None, (-2, 49)),
+        (None, 1)):
+        data = np.arange(24).astype(np.float32)
+        assert_rt(data, shape, np.int16,
+                  in_cast = in_cast,
+                  pre_clips = pre_clips,
+                  inter = inter,
+                  slope = slope,
+                  post_clips = post_clips,
+                  nan_fill = nan_fill)
+        # Check defense against in-place modification with nans present
+        if not nan_fill is None:
+            data[1] = np.nan
+            assert_rt(data, shape, np.int16,
+                      in_cast = in_cast,
+                      pre_clips = pre_clips,
+                      inter = inter,
+                      slope = slope,
+                      post_clips = post_clips,
+                      nan_fill = nan_fill)

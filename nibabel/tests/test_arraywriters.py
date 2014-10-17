@@ -8,7 +8,6 @@ import sys
 from platform import python_compiler, machine
 from distutils.version import LooseVersion
 import itertools
-
 import numpy as np
 
 from ..externals.six import BytesIO
@@ -17,7 +16,7 @@ from ..arraywriters import (SlopeInterArrayWriter, SlopeArrayWriter,
                             WriterError, ScalingError, ArrayWriter,
                             make_array_writer, get_slope_inter)
 
-from ..casting import int_abs, type_info, shared_range
+from ..casting import int_abs, type_info, shared_range, on_powerpc
 
 from ..volumeutils import array_from_file, apply_read_scaling, _dt_min_max
 
@@ -28,7 +27,7 @@ from nose.tools import (assert_true, assert_false,
                         assert_equal, assert_not_equal,
                         assert_raises)
 
-from ..testing import assert_allclose_safely
+from ..testing import assert_allclose_safely, suppress_warnings
 from ..checkwarns import ErrorWarnings
 
 
@@ -54,17 +53,6 @@ def round_trip(writer, order='F', apply_scale=True):
     return data_back
 
 
-def maybe_bad_c256(flt_type):
-    # I was getting very strange behavior with byte-swapped complex 256 on
-    # Python 3.3 numpy 1.7.0.  For that exact combination, return True
-    if sys.version_info[0] < 3 or sys.version_info[1] < 3:
-        return False
-    if NP_VERSION != LooseVersion('1.7.0'):
-        return False
-    dt = np.dtype(flt_type)
-    return (dt.kind == 'c' and dt.itemsize == 32)
-
-
 def test_arraywriters():
     # Test initialize
     # Simple cases
@@ -80,15 +68,31 @@ def test_arraywriters():
             assert_true(aw.array is arr)
             assert_equal(aw.out_dtype, arr.dtype)
             assert_array_equal(arr, round_trip(aw))
-            # Byteswapped is OK - except for complex256 on some numpies
-            if not maybe_bad_c256(type):
-                bs_arr = arr.byteswap().newbyteorder('S')
+            # Byteswapped should be OK
+            bs_arr = arr.byteswap().newbyteorder('S')
+            # Except on some numpies for complex256, where the array does not
+            # equal itself
+            if not np.all(bs_arr == arr):
+                assert_true(NP_VERSION <= LooseVersion('1.7.0'))
+                assert_true(on_powerpc())
+                assert_true(type == np.complex256)
+            else:
                 bs_aw = klass(bs_arr)
+                bs_aw_rt = round_trip(bs_aw)
+                # On Ubuntu 13.04 with python 3.3 __eq__ comparison on
+                # arrays with complex numbers fails here for some
+                # reason -- not our fault, and to test correct operation we
+                # will just compare element by element
+                if NP_VERSION == '1.7.1' and sys.version_info[:2] == (3, 3):
+                    assert_array_equal_ = lambda x, y: np.all([x_==y_ for x_,y_ in zip(x,y)])
+                else:
+                    assert_array_equal_ = assert_array_equal
                 # assert against original array because POWER7 was running into
                 # trouble using the byteswapped array (bs_arr)
-                assert_array_equal(arr, round_trip(bs_aw))
+                assert_array_equal_(arr, bs_aw_rt)
                 bs_aw2 = klass(bs_arr, arr.dtype)
-                assert_array_equal(arr, round_trip(bs_aw2))
+                bs_aw2_rt = round_trip(bs_aw2)
+                assert_array_equal(arr, bs_aw2_rt)
             # 2D array
             arr2 = np.reshape(arr, (2, 5))
             a2w = klass(arr2)
@@ -130,8 +134,9 @@ def test_no_scaling():
         kwargs = (dict(check_scaling=False) if awt == ArrayWriter
                   else dict(calc_scale=False))
         aw = awt(arr, out_dtype, **kwargs)
-        back_arr = round_trip(aw)
-        exp_back = arr.astype(float)
+        with suppress_warnings():  # cast to real from cplx
+            back_arr = round_trip(aw)
+            exp_back = arr.astype(float)
         if out_dtype in IUINT_TYPES:
             exp_back = np.round(exp_back)
             if hasattr(aw, 'slope') and in_dtype in FLOAT_TYPES:
@@ -637,7 +642,8 @@ def test_float_int_min_max():
             continue
         for out_dt in IUINT_TYPES:
             try:
-                aw = SlopeInterArrayWriter(arr, out_dt)
+                with suppress_warnings():  # overflow
+                    aw = SlopeInterArrayWriter(arr, out_dt)
             except ScalingError:
                 continue
             arr_back_sc = round_trip(aw)

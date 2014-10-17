@@ -9,6 +9,7 @@
 from __future__ import division, print_function, absolute_import
 
 from os.path import join as pjoin
+
 import gzip
 import bz2
 import warnings
@@ -32,6 +33,7 @@ from . import test_spatialimages as tsi
 from .test_fileslice import slicer_samples
 
 EG_FNAME = pjoin(data_path, 'tiny.mnc')
+
 
 def test_old_namespace():
     # Check old names are defined in minc1 module and top level
@@ -164,7 +166,7 @@ class _TestMincFile(object):
             assert_array_almost_equal(data.mean(), tp['mean'])
             # check if mnc can be converted to nifti
             ni_img = Nifti1Image.from_image(img)
-            assert_array_equal(ni_img.get_affine(), tp['affine'])
+            assert_array_equal(ni_img.affine, tp['affine'])
             assert_array_equal(ni_img.get_data(), data)
 
     def test_array_proxy_slicing(self):

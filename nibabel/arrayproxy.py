@@ -17,6 +17,7 @@ The proxy API is - at minimum:
   ndarray slice specification that does not use numpy 'advanced indexing'.
 * modifying no object outside ``obj`` will affect the result of
   ``np.asarray(obj)``.  Specifically:
+
   * Changes in position (``obj.tell()``) of passed file-like objects will
     not affect the output of from ``np.asarray(proxy)``.
   * if you pass a header into the __init__, then modifying the original
@@ -98,15 +99,22 @@ class ArrayProxy(object):
     def offset(self):
         return self._offset
 
-    def __array__(self):
-        ''' Read of data from file '''
+    def get_unscaled(self):
+        ''' Read of data from file
+
+        This is an optional part of the proxy API
+        '''
         with BinOpener(self.file_like) as fileobj:
             raw_data = array_from_file(self._shape,
                                        self._dtype,
                                        fileobj,
                                        offset=self._offset,
                                        order=self.order)
-        # Upcast as necessary for big slopes, intercepts
+        return raw_data
+
+    def __array__(self):
+        # Read array and scale
+        raw_data = self.get_unscaled()
         return apply_read_scaling(raw_data, self._slope, self._inter)
 
     def __getitem__(self, slicer):
@@ -116,7 +124,7 @@ class ArrayProxy(object):
                                  self._shape,
                                  self._dtype,
                                  self._offset,
-                                 order = self.order)
+                                 order=self.order)
         # Upcast as necessary for big slopes, intercepts
         return apply_read_scaling(raw_data, self._slope, self._inter)
 

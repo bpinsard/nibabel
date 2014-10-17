@@ -10,7 +10,6 @@
 
 """
 from ..externals.six import BytesIO
-
 import numpy as np
 
 from ..spatialimages import (Header, SpatialImage, HeaderDataError,
@@ -24,6 +23,7 @@ from nose.tools import (assert_true, assert_false, assert_equal,
 from numpy.testing import assert_array_equal, assert_array_almost_equal
 
 from .test_helpers import bytesio_round_trip
+from ..testing import suppress_warnings
 
 
 def test_header_init():
@@ -200,25 +200,25 @@ class TestSpatialImage(TestCase):
         arr = np.arange(24, dtype=np.int16).reshape((2, 3, 4))
         aff = np.eye(4)
         img = img_klass(arr, aff)
-        assert_array_equal(img.get_affine(), aff)
+        assert_array_equal(img.affine, aff)
         aff[0,0] = 99
-        assert_false(np.all(img.get_affine() == aff))
+        assert_false(np.all(img.affine == aff))
         # header, created by image creation
-        ihdr = img.get_header()
+        ihdr = img.header
         # Pass it back in
         img = img_klass(arr, aff, ihdr)
         # Check modifying header outside does not modify image
         ihdr.set_zooms((4, 5, 6))
-        assert_not_equal(img.get_header(), ihdr)
+        assert_not_equal(img.header, ihdr)
 
     def test_float_affine(self):
         # Check affines get converted to float
         img_klass = self.image_class
         arr = np.arange(3, dtype=np.int16)
         img = img_klass(arr, np.eye(4, dtype=np.float32))
-        assert_equal(img.get_affine().dtype, np.dtype(np.float64))
+        assert_equal(img.affine.dtype, np.dtype(np.float64))
         img = img_klass(arr, np.eye(4, dtype=np.int16))
-        assert_equal(img.get_affine().dtype, np.dtype(np.float64))
+        assert_equal(img.affine.dtype, np.dtype(np.float64))
 
     def test_images(self):
         # Assumes all possible images support int16
@@ -226,7 +226,7 @@ class TestSpatialImage(TestCase):
         arr = np.arange(24, dtype=np.int16).reshape((2, 3, 4))
         img = self.image_class(arr, None)
         assert_array_equal(img.get_data(), arr)
-        assert_equal(img.get_affine(), None)
+        assert_equal(img.affine, None)
 
     def test_default_header(self):
         # Check default header is as expected
@@ -292,9 +292,10 @@ class TestSpatialImage(TestCase):
         # Assumes all possible images support int16
         # See https://github.com/nipy/nibabel/issues/58
         img = img_klass(np.arange(1, dtype=np.int16), np.eye(4))
-        assert_equal(img.get_shape(), (1,))
-        img = img_klass(np.zeros((2,3,4), np.int16), np.eye(4))
-        assert_equal(img.get_shape(), (2,3,4))
+        with suppress_warnings():
+            assert_equal(img.get_shape(), (1,))
+            img = img_klass(np.zeros((2,3,4), np.int16), np.eye(4))
+            assert_equal(img.get_shape(), (2,3,4))
 
     def test_get_data(self):
         # Test array image and proxy image interface

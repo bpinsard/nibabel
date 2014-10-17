@@ -13,6 +13,17 @@ from os.path import splitext
 import gzip
 import bz2
 
+# The largest memory chunk that gzip can use for reads
+GZIP_MAX_READ_CHUNK = 100 * 1024 * 1024 # 100Mb
+
+
+def _gzip_open(fileish, *args, **kwargs):
+    # open gzip files with faster reads on large files using larger chunks
+    # See https://github.com/nipy/nibabel/pull/210 for discussion
+    gzip_file = gzip.open(fileish, *args, **kwargs)
+    gzip_file.max_read_chunk = GZIP_MAX_READ_CHUNK
+    return gzip_file
+
 
 class Opener(object):
     """ Class to accept, maybe open, and context-manage file-likes / filenames
@@ -32,7 +43,7 @@ class Opener(object):
         passed to opening method when `fileish` is str.  Change of defaults as
         for \*args
     """
-    gz_def = (gzip.open, ('mode', 'compresslevel'))
+    gz_def = (_gzip_open, ('mode', 'compresslevel'))
     bz2_def = (bz2.BZ2File, ('mode', 'buffering', 'compresslevel'))
     compress_ext_map = {
         '.gz': gz_def,
@@ -107,6 +118,9 @@ class Opener(object):
 
     def close(self, *args, **kwargs):
         return self.fobj.close(*args, **kwargs)
+
+    def __iter__(self):
+        return iter(self.fobj)
 
     def close_if_mine(self):
         """ Close ``self.fobj`` iff we opened it in the constructor

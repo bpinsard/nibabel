@@ -9,10 +9,10 @@
 ''' Very simple spatial image class
 
 The image class maintains the association between a 3D (or greater)
-array, and an affine transform that maps voxel coordinates to some real
-world space.  It also has a ``header`` - some standard set of meta-data
-that is specific to the image format - and ``extra`` - a dictionary
-container for any other metadata.
+array, and an affine transform that maps voxel coordinates to some world space.
+It also has a ``header`` - some standard set of meta-data that is specific to
+the image format, and ``extra`` - a dictionary container for any other
+metadata.
 
 It has attributes:
 
@@ -21,9 +21,8 @@ It has attributes:
 methods:
 
    * .get_data()
-   * .get_affine()
-   * .get_header()
-   * .set_shape(shape)
+   * .get_affine() (deprecated, use affine property instead)
+   * .get_header() (deprecated, use header property instead)
    * .to_filename(fname) - writes data to filename(s) derived from
      ``fname``, where the derivation may differ between formats.
    * to_file_map() - save image to files with which the image is already
@@ -33,10 +32,14 @@ methods:
 properties:
 
    * shape
+   * affine
+   * header
+   * dataobj
 
 classmethods:
 
    * from_filename(fname) - make instance by loading from filename
+   * from_file_map(fmap) - make instance from file map
    * instance_to_filename(img, fname) - save ``img`` instance to
      filename ``fname``.
 
@@ -55,20 +58,20 @@ You can load the data into an image from file with::
 
    img.from_filename(fname)
 
-The image stores its associated files in its ``files`` attribute.  In
-order to just save an image, for which you know there is an associated
-filename, or other storage, you can do::
+The image stores its associated files in its ``file_map`` attribute.  In order
+to just save an image, for which you know there is an associated filename, or
+other storage, you can do::
 
    img.to_file_map()
 
-You can get the data out again with of::
+You can get the data out again with::
 
     img.get_data()
 
 Less commonly, for some image types that support it, you might want to
-fetch out the unscaled array via the header::
+fetch out the unscaled array via the object containing the data::
 
-    unscaled_data = img.get_unscaled_data()
+    unscaled_data = img.dataoobj.get_unscaled()
 
 Analyze-type images (including nifti) support this, but others may not
 (MINC, for example).
@@ -76,7 +79,7 @@ Analyze-type images (including nifti) support this, but others may not
 Sometimes you might to avoid any loss of precision by making the
 data type the same as the input::
 
-    hdr = img.get_header()
+    hdr = img.header
     hdr.set_data_dtype(data.dtype)
     img.to_filename(fname)
 
@@ -335,8 +338,8 @@ class SpatialImage(object):
         affine : None or (4,4) array-like
            homogenous affine giving relationship between voxel coordinates and
            world coordinates.  Affine can also be None.  In this case,
-           ``obj.get_affine()`` also returns None, and the affine as written to
-           disk will depend on the file format.
+           ``obj.affine`` also returns None, and the affine as written to disk
+           will depend on the file format.
         header : None or mapping or header instance, optional
            metadata for this image format
         extra : None or mapping, optional
@@ -398,13 +401,12 @@ class SpatialImage(object):
         >>> data = np.zeros((2,3,4))
         >>> affine = np.diag([1.0,2.0,3.0,1.0])
         >>> img = SpatialImage(data, affine)
-        >>> hdr = img.get_header()
         >>> img.shape == (2, 3, 4)
         True
         >>> img.update_header()
-        >>> hdr.get_data_shape() == (2, 3, 4)
+        >>> img.header.get_data_shape() == (2, 3, 4)
         True
-        >>> hdr.get_zooms()
+        >>> img.header.get_zooms()
         (1.0, 2.0, 3.0)
         '''
         hdr = self._header
@@ -434,7 +436,7 @@ class SpatialImage(object):
 
     def __str__(self):
         shape = self.shape
-        affine = self.get_affine()
+        affine = self.affine
         return '\n'.join((
                 str(self.__class__),
                 'data shape %s' % (shape,),
@@ -593,8 +595,9 @@ class SpatialImage(object):
                                         klass.files_types,
                                         trailing_suffixes=klass._compressed_exts)
         except TypesFilenamesError:
-            raise ImageFileError('Filespec "%s" does not look right for '
-                             'class %s ' % (filespec, klass))
+            raise ImageFileError(
+                'Filespec "{0}" does not look right for class {1}'.format(
+                    filespec, klass))
         file_map = {}
         for key, fname in filenames.items():
             file_map[key] = FileHolder(filename=fname)
@@ -685,9 +688,8 @@ class SpatialImage(object):
         Parameters
         ----------
         img : ``spatialimage`` instance
-           In fact, an object with the API of ``spatialimage`` -
-           specifically ``get_data``, ``get_affine``, ``get_header`` and
-           ``extra``.
+           In fact, an object with the API of ``spatialimage`` - specifically
+           ``dataobj``, ``affine``, ``header`` and ``extra``.
         filename : str
            Filename, implying name to which to save image.
         '''
@@ -702,15 +704,14 @@ class SpatialImage(object):
         ----------
         img : ``spatialimage`` instance
            In fact, an object with the API of ``spatialimage`` -
-           specifically ``get_data``, ``get_affine``, ``get_header`` and
-           ``extra``.
+           specifically ``dataobj``, ``affine``, ``header`` and ``extra``.
 
         Returns
         -------
         cimg : ``spatialimage`` instance
            Image, of our own class
         '''
-        return klass(img._dataobj,
-                     img._affine,
-                     klass.header_class.from_header(img._header),
+        return klass(img.dataobj,
+                     img.affine,
+                     klass.header_class.from_header(img.header),
                      extra=img.extra.copy())

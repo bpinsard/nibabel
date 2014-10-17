@@ -23,9 +23,9 @@ Quickstart
    img3 = nib.load('spm_file.img')
 
    data = img1.get_data()
-   affine = img1.get_affine()
+   affine = img1.affine
 
-   print img1
+   print(img1)
 
    nib.save(img1, 'my_file_copy.nii.gz')
 
@@ -63,6 +63,7 @@ from .orientations import (io_orientation, orientation_affine,
                            apply_orientation, aff2axcodes)
 from .imageclasses import class_map, ext_map
 from . import trackvis
+from . import mriutils
 
 # be friendly on systems with ancient numpy -- no tests, but at least
 # importable
@@ -75,4 +76,6 @@ except ImportError:
     def test(*args, **kwargs): raise RuntimeError('Need numpy >= 1.2 for tests')
 
 from .pkg_info import get_pkg_info as _get_pkg_info
-get_info = lambda : _get_pkg_info(os.path.dirname(__file__))
+
+def get_info():
+    return _get_pkg_info(os.path.dirname(__file__))
