@@ -11,11 +11,12 @@ from __future__ import division, print_function
 
 import sys
 import warnings
+import gzip
 import bz2
+from os.path import exists, splitext
 
 import numpy as np
 
-from os.path import exists, splitext
 from .casting import (shared_range, type_info, OK_FLOATS)
 from .openers import Opener
 
@@ -32,6 +33,12 @@ endian_codes = (# numpy code, aliases
 
 #: default compression level when writing gz and bz2 files
 default_compresslevel = 1
+
+#: file-like classes known to hold compressed data
+COMPRESSED_FILE_LIKES = (gzip.GzipFile, bz2.BZ2File)
+
+#: file-like classes known to return string values that are safe to modify
+SAFE_STRINGERS = (gzip.GzipFile, bz2.BZ2File)
 
 
 class Recoder(object):
@@ -426,7 +433,13 @@ def can_cast(in_type, out_type, has_intercept=False, has_slope=False):
     return True
 
 
-def array_from_file(shape, in_dtype, infile, offset=0, order='F'):
+def _is_compressed_fobj(fobj):
+    """ Return True if fobj represents a compressed data file-like object
+    """
+    return isinstance(fobj, COMPRESSED_FILE_LIKES)
+
+
+def array_from_file(shape, in_dtype, infile, offset=0, order='F', mmap=True):
     ''' Get array from file with specified shape, dtype and file offset
 
     Parameters
@@ -438,10 +451,15 @@ def array_from_file(shape, in_dtype, infile, offset=0, order='F'):
     infile : file-like
         open file-like object implementing at least read() and seek()
     offset : int, optional
-        offset in bytes into infile to start reading array
-        data. Default is 0
+        offset in bytes into `infile` to start reading array data. Default is 0
     order : {'F', 'C'} string
         order in which to write data.  Default is 'F' (fortran order).
+    mmap : {True, False, 'c', 'r', 'r+'}
+        `mmap` controls the use of numpy memory mapping for reading data.  If
+        False, do not try numpy ``memmap`` for data array.  If one of {'c', 'r',
+        'r+'}, try numpy memmap with ``mode=mmap``.  A `mmap` value of True
+        gives the same behavior as ``mmap='c'``.  If `infile` cannot be
+        memory-mapped, ignore `mmap` value and read array from file.
 
     Returns
     -------
@@ -464,43 +482,51 @@ def array_from_file(shape, in_dtype, infile, offset=0, order='F'):
     >>> np.all(arr == arr2)
     True
     '''
+    if not mmap in (True, False, 'c', 'r', 'r+'):
+        raise ValueError("mmap value should be one of True, False, 'c', "
+                         "'r', 'r+'")
+    if mmap == True:
+        mmap = 'c'
     in_dtype = np.dtype(in_dtype)
-    try: # Try memmapping file on disk
-        arr = np.memmap(infile,
-                        in_dtype,
-                        mode='c',
-                        shape=shape,
-                        order=order,
-                        offset=offset)
-        # The error raised by memmap, for different file types, has
-        # changed in different incarnations of the numpy routine
-    except (AttributeError, TypeError, ValueError): # then read data
-        infile.seek(offset)
-        if len(shape) == 0:
-            return np.array([])
-        datasize = int(np.prod(shape) * in_dtype.itemsize)
-        if datasize == 0:
-            return np.array([])
-        data_str = infile.read(datasize)
-        if len(data_str) != datasize:
-            if hasattr(infile, 'name'):
-                file_str = 'file "%s"' % infile.name
-            else:
-                file_str = 'file object'
-            msg = 'Expected %s bytes, got %s bytes from %s\n' \
-                  % (datasize, len(data_str), file_str) + \
-                  ' - could the file be damaged?'
-            raise IOError(msg)
-        arr = np.ndarray(shape,
-                         in_dtype,
-                         buffer=data_str,
-                         order=order)
-        # for some types, we can write to the string buffer without
-        # worrying, but others we can't.
-        if hasattr(infile, 'fileno') or isinstance(infile, bz2.BZ2File):
-            arr.flags.writeable = True
-        else:
-            arr = arr.copy()
+    # Get file-like object from Opener instance
+    infile = getattr(infile, 'fobj', infile)
+    if mmap and not _is_compressed_fobj(infile):
+        try: # Try memmapping file on disk
+            return np.memmap(infile,
+                             in_dtype,
+                             mode=mmap,
+                             shape=shape,
+                             order=order,
+                             offset=offset)
+            # The error raised by memmap, for different file types, has
+            # changed in different incarnations of the numpy routine
+        except (AttributeError, TypeError, ValueError):
+            pass
+    if len(shape) == 0:
+        return np.array([])
+    n_bytes = int(np.prod(shape) * in_dtype.itemsize)
+    if n_bytes == 0:
+        return np.array([])
+    # Read data from file
+    infile.seek(offset)
+    if hasattr(infile, 'readinto'):
+        data_bytes = bytearray(n_bytes)
+        n_read = infile.readinto(data_bytes)
+        needs_copy = False
+    else:
+        data_bytes = infile.read(n_bytes)
+        n_read = len(data_bytes)
+        needs_copy = not isinstance(infile, SAFE_STRINGERS)
+    if n_bytes != n_read:
+        raise IOError('Expected {0} bytes, got {1} bytes from {2}\n'
+                      ' - could the file be damaged?'.format(
+                          n_bytes,
+                          n_read,
+                          getattr(infile, 'name', 'object')))
+    arr = np.ndarray(shape, in_dtype, buffer=data_bytes, order=order)
+    if needs_copy:
+        return arr.copy()
+    arr.flags.writeable = True
     return arr
 
 

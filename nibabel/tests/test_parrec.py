@@ -4,15 +4,18 @@
 from os.path import join as pjoin, dirname, basename
 from glob import glob
 from warnings import simplefilter
+import shutil
 
 import numpy as np
 from numpy import array as npa
 
+from .. import load as top_load
 from .. import parrec
 from ..parrec import (parse_PAR_header, PARRECHeader, PARRECError, vol_numbers,
                       vol_is_full, PARRECImage, PARRECArrayProxy)
 from ..openers import Opener
 from ..fileholders import FileHolder
+from ..volumeutils import array_from_file
 
 from numpy.testing import (assert_almost_equal,
                            assert_array_equal)
@@ -21,6 +24,9 @@ from nose.tools import (assert_true, assert_false, assert_raises,
                         assert_equal, assert_not_equal)
 
 from ..testing import catch_warn_reset, suppress_warnings
+
+from .test_arrayproxy import check_mmap
+from . import test_spatialimages as tsi
 
 
 DATA_PATH = pjoin(dirname(__file__), 'data')
@@ -31,6 +37,13 @@ with Opener(EG_PAR, 'rt') as _fobj:
 # Fake truncated
 TRUNC_PAR = pjoin(DATA_PATH, 'phantom_truncated.PAR')
 TRUNC_REC = pjoin(DATA_PATH, 'phantom_truncated.REC')
+# Fake V4
+V4_PAR = pjoin(DATA_PATH, 'phantom_fake_v4.PAR')
+# Fake V4.1
+V41_PAR = pjoin(DATA_PATH, 'phantom_fake_v4_1.PAR')
+# Fake varying scaling
+VARY_PAR = pjoin(DATA_PATH, 'phantom_varscale.PAR')
+VARY_REC = pjoin(DATA_PATH, 'phantom_varscale.REC')
 # Affine as we determined it mid-2014
 AN_OLD_AFFINE = np.array(
     [[-3.64994708, 0.,   1.83564171, 123.66276611],
@@ -112,15 +125,48 @@ DTI_PAR_BVECS = np.array([[-0.667,  -0.667,  -0.333],
 # DTI.PAR values for bvecs
 DTI_PAR_BVALS = [1000] * 6 + [0, 1000]
 
+EXAMPLE_IMAGES = [
+    # Parameters come from load of Philips' conversion to NIfTI
+    # Loaded image was ``phantom_EPI_asc_CLEAR_2_1.nii`` from
+    # http://psydata.ovgu.de/philips_achieva_testfiles/conversion
+    dict(
+        fname = EG_PAR,
+        shape = (64, 64, 9, 3),
+        dtype = np.uint16,
+        # We disagree with Philips about the right affine, for the moment, so
+        # use our own affine as determined from a previous load in nibabel
+        affine = AN_OLD_AFFINE,
+        zooms = (3.75, 3.75, 8.0, 2.0),
+        data_summary = dict(
+            min = 0.0,
+            max = 2299.4110643863678,
+            mean = 194.95876256117265),
+        is_proxy = True)
+]
+
+
+def test_top_level_load():
+    # Test PARREC images can be loaded from nib.load
+    img = top_load(EG_PAR)
+    assert_almost_equal(img.affine, AN_OLD_AFFINE)
+
 
 def test_header():
-    hdr = PARRECHeader(HDR_INFO, HDR_DEFS)
-    assert_equal(hdr.get_data_shape(), (64, 64, 9, 3))
-    assert_equal(hdr.get_data_dtype(), np.dtype(np.int16))
-    assert_equal(hdr.get_zooms(), (3.75, 3.75, 8.0, 2.0))
-    assert_equal(hdr.get_data_offset(), 0)
-    si = np.array([np.unique(x) for x in hdr.get_data_scaling()]).ravel()
-    assert_almost_equal(si, (1.2903541326522827, 0.0), 5)
+    v42_hdr = PARRECHeader(HDR_INFO, HDR_DEFS)
+    with open(V4_PAR, 'rt') as fobj:
+        v4_hdr = PARRECHeader.from_fileobj(fobj)
+    with open(V41_PAR, 'rt') as fobj:
+        v41_hdr = PARRECHeader.from_fileobj(fobj)
+    for hdr in (v42_hdr, v41_hdr, v4_hdr):
+        hdr = PARRECHeader(HDR_INFO, HDR_DEFS)
+        assert_equal(hdr.get_data_shape(), (64, 64, 9, 3))
+        assert_equal(hdr.get_data_dtype(), np.dtype('<u2'))
+        assert_equal(hdr.get_zooms(), (3.75, 3.75, 8.0, 2.0))
+        assert_equal(hdr.get_data_offset(), 0)
+        si = np.array([np.unique(x) for x in hdr.get_data_scaling()]).ravel()
+        assert_almost_equal(si, (1.2903541326522827, 0.0), 5)
+        assert_equal(hdr.get_q_vectors(), None)
+        assert_equal(hdr.get_bvals_bvecs(), (None, None))
 
 
 def test_header_scaling():
@@ -393,6 +439,13 @@ def assert_arr_dict_equal(dict1, dict2):
         assert_array_equal(value1, value2)
 
 
+def assert_structarr_equal(star1, star2):
+    # Compare structured arrays (array_equal does not work for np 1.5)
+    assert_equal(star1.dtype, star2.dtype)
+    for name in star1.dtype.names:
+        assert_array_equal(star1[name], star2[name])
+
+
 def test_header_copy():
     # Test header copying
     hdr = PARRECHeader(HDR_INFO, HDR_DEFS)
@@ -404,7 +457,7 @@ def test_header_copy():
         assert_false(hdr1.general_info is hdr2.general_info)
         assert_arr_dict_equal(hdr1.general_info, hdr2.general_info)
         assert_false(hdr1.image_defs is hdr2.image_defs)
-        assert_array_equal(hdr1.image_defs, hdr2.image_defs)
+        assert_structarr_equal(hdr1.image_defs, hdr2.image_defs)
 
     assert_copy_ok(hdr, hdr2)
     assert_false(hdr.permit_truncated)
@@ -421,8 +474,8 @@ def test_header_copy():
 def test_image_creation():
     # Test parts of image API in parrec image creation
     hdr = PARRECHeader(HDR_INFO, HDR_DEFS)
-    arr_prox_dv = np.array(PARRECArrayProxy(EG_REC, hdr, 'dv'))
-    arr_prox_fp = np.array(PARRECArrayProxy(EG_REC, hdr, 'fp'))
+    arr_prox_dv = np.array(PARRECArrayProxy(EG_REC, hdr, scaling='dv'))
+    arr_prox_fp = np.array(PARRECArrayProxy(EG_REC, hdr, scaling='fp'))
     good_map = dict(image = FileHolder(EG_REC),
                     header = FileHolder(EG_PAR))
     trunc_map = dict(image = FileHolder(TRUNC_REC),
@@ -456,3 +509,77 @@ def test_image_creation():
         assert_array_equal(img.dataobj, arr_prox_dv)
         img = func(trunc_param, permit_truncated=True, scaling='fp')
         assert_array_equal(img.dataobj, arr_prox_fp)
+
+
+class FakeHeader(object):
+    """ Minimal API of header for PARRECArrayProxy
+    """
+    def __init__(self, shape, dtype):
+        self._shape = shape
+        self._dtype = np.dtype(dtype)
+
+    def get_data_shape(self):
+        return self._shape
+
+    def get_data_dtype(self):
+        return self._dtype
+
+    def get_sorted_slice_indices(self):
+        n_slices = np.prod(self._shape[2:])
+        return np.arange(n_slices)
+
+    def get_data_scaling(self, scaling):
+        scale_shape = (1, 1) + self._shape[2:]
+        return np.ones(scale_shape), np.zeros(scale_shape)
+
+    def get_rec_shape(self):
+        n_slices = np.prod(self._shape[2:])
+        return self._shape[:2] + (n_slices,)
+
+
+def test_parrec_proxy():
+    # Test PAR / REC proxy class, including mmap flags
+    shape = (10, 20, 30, 5)
+    hdr = FakeHeader(shape, np.int32)
+    check_mmap(hdr, 0, PARRECArrayProxy, check_mode=False)
+
+
+class TestPARRECImage(tsi.MmapImageMixin):
+    image_class = PARRECImage
+    check_mmap_mode = False
+
+    def write_image(self):
+        return parrec.load(EG_PAR), EG_PAR
+
+
+def test_bitpix():
+    # Check errors for other than 8, 16 bit
+    hdr_defs = HDR_DEFS.copy()
+    for pix_size in (24, 32):
+        hdr_defs['image pixel size'] = pix_size
+        assert_raises(PARRECError, PARRECHeader, HDR_INFO, hdr_defs)
+
+
+def test_varying_scaling():
+    # Check the algorithm works as expected for varying scaling
+    img = PARRECImage.load(VARY_REC)
+    rec_shape = (64, 64, 27)
+    with open(VARY_REC, 'rb') as fobj:
+        arr = array_from_file(rec_shape, '<i2', fobj)
+    img_defs = img.header.image_defs
+    slopes = img_defs['rescale slope']
+    inters = img_defs['rescale intercept']
+    sc_slopes = img_defs['scale slope']
+    # Check dv scaling
+    scaled_arr = arr.astype(np.float64)
+    for i in range(arr.shape[2]):
+        scaled_arr[:, :, i] *= slopes[i]
+        scaled_arr[:, :, i] += inters[i]
+    assert_almost_equal(np.reshape(scaled_arr, img.shape, order='F'),
+                        img.get_data(), 9)
+    # Check fp scaling
+    for i in range(arr.shape[2]):
+        scaled_arr[:, :, i] /= (slopes[i] * sc_slopes[i])
+    dv_img = PARRECImage.load(VARY_REC, scaling='fp')
+    assert_almost_equal(np.reshape(scaled_arr, img.shape, order='F'),
+                        dv_img.get_data(), 9)

@@ -26,20 +26,22 @@ from .imageclasses import class_map, ext_map
 from .arrayproxy import is_proxy
 
 
-def load(filename):
+def load(filename, **kwargs):
     ''' Load file given filename, guessing at file type
 
     Parameters
     ----------
     filename : string
        specification of file to load
+    \*\*kwargs : keyword arguments
+        Keyword arguments to format-specific load
 
     Returns
     -------
     img : ``SpatialImage``
        Image of guessed type
     '''
-    return guessed_image_type(filename).from_filename(filename)
+    return guessed_image_type(filename).from_filename(filename, **kwargs)
 
 
 def guessed_image_type(filename):
@@ -56,20 +58,21 @@ def guessed_image_type(filename):
         Class corresponding to guessed image type
     """
     froot, ext, trailing = splitext_addext(filename, ('.gz', '.bz2'))
+    lext = ext.lower()
     try:
-        img_type = ext_map[ext]
+        img_type = ext_map[lext]
     except KeyError:
         raise ImageFileError('Cannot work out file type of "%s"' %
                              filename)
-    if ext in ('.mgh', '.mgz'):
+    if lext in ('.mgh', '.mgz', '.par'):
         klass = class_map[img_type]['class']
-    elif ext == '.mnc':
+    elif lext == '.mnc':
         # Look for HDF5 signature for MINC2
         # http://www.hdfgroup.org/HDF5/doc/H5.format.html
         with Opener(filename) as fobj:
             signature = fobj.read(4)
             klass = Minc2Image if signature == b'\211HDF' else Minc1Image
-    elif ext == '.nii':
+    elif lext == '.nii':
         with BinOpener(filename) as fobj:
             binaryblock = fobj.read(348)
         ft = which_analyze_type(binaryblock)

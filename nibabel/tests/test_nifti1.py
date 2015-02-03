@@ -65,6 +65,7 @@ class TestNifti1PairHeader(tana.TestAnalyzeHeader, tspm.HeaderScalingMixin):
         supported_np_types = supported_np_types.union((
             np.longdouble,
             np.longcomplex))
+    tana.add_intp(supported_np_types)
 
     def test_empty(self):
         tana.TestAnalyzeHeader.test_empty(self)
@@ -617,14 +618,16 @@ class TestNifti1SingleHeader(TestNifti1PairHeader):
 
     def test_float128(self):
         hdr = self.header_class()
-        if have_binary128():
+        # Allow for Windows visual studio where longdouble is float64
+        ld_dt = np.dtype(np.longdouble)
+        if have_binary128() or ld_dt == np.dtype(np.float64):
             hdr.set_data_dtype(np.longdouble)
-            assert_equal(hdr.get_data_dtype().type, np.longdouble)
+            assert_equal(hdr.get_data_dtype(), ld_dt)
         else:
             assert_raises(HeaderDataError, hdr.set_data_dtype, np.longdouble)
 
 
-class TestNifti1Pair(tana.TestAnalyzeImage, tspm.ScalingMixin):
+class TestNifti1Pair(tana.TestAnalyzeImage, tspm.ImageScalingMixin):
     # Run analyze-flavor spatialimage tests
     image_class = Nifti1Pair
     supported_np_types = TestNifti1PairHeader.supported_np_types
@@ -838,13 +841,14 @@ class TestNifti1Pair(tana.TestAnalyzeImage, tspm.ScalingMixin):
         img2 = bytesio_round_trip(img)
         assert_array_equal(img2.get_data(), data)
         with InTemporaryDirectory() as tmpdir:
-            for ext in ('.gz', '.bz2'):
+            for ext in ('', '.gz', '.bz2'):
                 fname = os.path.join(tmpdir, 'test' + img_ext + ext)
                 img.to_filename(fname)
                 img3 = IC.load(fname)
                 assert_true(isinstance(img3, img.__class__))
                 assert_array_equal(img3.get_data(), data)
                 assert_equal(img3.header, img.header)
+                assert_true(isinstance(img3.get_data(), np.memmap if ext == '' else np.ndarray))
                 # del to avoid windows errors of form 'The process cannot
                 # access the file because it is being used'
                 del img3

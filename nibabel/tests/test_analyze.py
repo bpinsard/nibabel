@@ -31,12 +31,14 @@ from ..casting import as_int
 from ..tmpdirs import InTemporaryDirectory
 from ..arraywriters import WriterError
 
-from numpy.testing import (assert_array_equal,
-                           assert_array_almost_equal)
+from nose.tools import (assert_equal, assert_not_equal, assert_true,
+                        assert_false, assert_raises)
+
+from numpy.testing import (assert_array_equal, assert_array_almost_equal)
 
 from ..testing import (assert_equal, assert_not_equal, assert_true,
                        assert_false, assert_raises, data_path,
-                       suppress_warnings)
+                       suppress_warnings, assert_dt_equal)
 
 from .test_wrapstruct import _TestLabeledWrapStruct
 from . import test_spatialimages as tsi
@@ -45,6 +47,14 @@ from .test_helpers import bytesio_filemap, bytesio_round_trip
 header_file = os.path.join(data_path, 'analyze.hdr')
 
 PIXDIM0_MSG = 'pixdim[1,2,3] should be non-zero; setting 0 dims to 1'
+
+
+def add_intp(supported_np_types):
+    # Add intp, uintp to supported types as necessary
+    supported_dtypes = [np.dtype(t) for t in supported_np_types]
+    for np_type in (np.intp, np.uintp):
+        if np.dtype(np_type) in supported_dtypes:
+            supported_np_types.add(np_type)
 
 
 class TestAnalyzeHeader(_TestLabeledWrapStruct):
@@ -57,6 +67,7 @@ class TestAnalyzeHeader(_TestLabeledWrapStruct):
                               np.float32,
                               np.float64,
                               np.complex64))
+    add_intp(supported_np_types)
 
     def test_supported_types(self):
         hdr = self.header_class()
@@ -239,29 +250,50 @@ class TestAnalyzeHeader(_TestLabeledWrapStruct):
     def test_data_dtype(self):
         # check getting and setting of data type
         # codes / types supported by all binary headers
-        supported_types = ((2, np.uint8),
-                           (4, np.int16),
-                           (8, np.int32),
-                           (16, np.float32),
-                           (32, np.complex64),
-                           (64, np.float64),
-                           (128, np.dtype([('R','u1'),
-                                           ('G', 'u1'),
-                                           ('B', 'u1')])))
+        all_supported_types = ((2, np.uint8),
+                               (4, np.int16),
+                               (8, np.int32),
+                               (16, np.float32),
+                               (32, np.complex64),
+                               (64, np.float64),
+                               (128, np.dtype([('R','u1'),
+                                               ('G', 'u1'),
+                                               ('B', 'u1')])))
         # and unsupported - here using some labels instead
-        unsupported_types = (np.void, 'none', 'all', 0)
+        all_unsupported_types = (np.void, 'none', 'all', 0)
+        def assert_set_dtype(dt_spec, np_dtype):
+            hdr = self.header_class()
+            hdr.set_data_dtype(dt_spec)
+            assert_dt_equal(hdr.get_data_dtype(), np_dtype)
+        # Test code, type known to be supported by all types
+        for code, npt in all_supported_types:
+            # Can set with code value
+            assert_set_dtype(code, npt)
+            # or numpy type
+            assert_set_dtype(npt, npt)
+            # or numpy dtype
+            assert_set_dtype(np.dtype(npt), npt)
+        # Test numerical types supported by this header type
+        for npt in self.supported_np_types:
+            # numpy type
+            assert_set_dtype(npt, npt)
+            # or numpy dtype
+            assert_set_dtype(np.dtype(npt), npt)
+            # or swapped numpy dtype
+            assert_set_dtype(np.dtype(npt).newbyteorder(), npt)
+            # or string dtype code
+            assert_set_dtype(np.dtype(npt).str, npt)
+            # or string dtype code without byteorder
+            if np.dtype(npt).str[0] in '=|<>':
+                assert_set_dtype(np.dtype(npt).str[1:], npt)
+        # Test aliases to Python types
+        assert_set_dtype(float, np.float64) # float64 always supported
+        np_sys_int = np.dtype(int).type # int could be 32 or 64 bit
+        if np_sys_int in self.supported_np_types: # no int64 for Analyze
+            assert_set_dtype(int, np_sys_int)
         hdr = self.header_class()
-        for code, npt in supported_types:
-            # Can set with code value, or numpy dtype, both return the
-            # dtype as output on get
-            hdr.set_data_dtype(code)
-            assert_equal(hdr.get_data_dtype(), npt)
-            hdr.set_data_dtype(npt)
-            assert_equal(hdr.get_data_dtype(), npt)
-        for inp in unsupported_types:
-            assert_raises(HeaderDataError,
-                                hdr.set_data_dtype,
-                                inp)
+        for inp in all_unsupported_types:
+            assert_raises(HeaderDataError, hdr.set_data_dtype, inp)
 
     def test_shapes(self):
         # Test that shape checks work
@@ -632,7 +664,7 @@ def test_data_code_error():
     assert_raises(HeaderDataError, AnalyzeHeader.from_header, hdr)
 
 
-class TestAnalyzeImage(tsi.TestSpatialImage):
+class TestAnalyzeImage(tsi.TestSpatialImage, tsi.MmapImageMixin):
     image_class = AnalyzeImage
     can_save = True
     supported_np_types = TestAnalyzeHeader.supported_np_types
