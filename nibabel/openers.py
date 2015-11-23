@@ -9,19 +9,65 @@
 """ Context manager openers for various fileobject types
 """
 
-from os.path import splitext
-import gzip
 import bz2
+import gzip
+import sys
+from os.path import splitext
+
 
 # The largest memory chunk that gzip can use for reads
 GZIP_MAX_READ_CHUNK = 100 * 1024 * 1024  # 100Mb
 
 
+class BufferedGzipFile(gzip.GzipFile):
+    """GzipFile able to readinto buffer >= 2**32 bytes.
+
+    This class only differs from gzip.GzipFile
+    in Python 3.5.0.
+
+    This works around a known issue in Python 3.5.
+    See https://bugs.python.org/issue25626"""
+
+    # This helps avoid defining readinto in Python 2.6,
+    #   where it is undefined on gzip.GzipFile.
+    # It also helps limit the exposure to this code.
+    if sys.version_info[:3] == (3, 5, 0):
+        def __init__(self, fileish, mode='rb', compresslevel=9,
+                     buffer_size=2**32-1):
+            super(BufferedGzipFile, self).__init__(fileish, mode=mode,
+                                                   compresslevel=compresslevel)
+            self.buffer_size = buffer_size
+
+        def readinto(self, buf):
+            """Uses self.buffer_size to do a buffered read."""
+            n_bytes = len(buf)
+            if n_bytes < 2 ** 32:
+                return super(BufferedGzipFile, self).readinto(buf)
+
+            # This works around a known issue in Python 3.5.
+            # See https://bugs.python.org/issue25626
+            mv = memoryview(buf)
+            n_read = 0
+            max_read = 2 ** 32 - 1  # Max for unsigned 32-bit integer
+            while (n_read < n_bytes):
+                n_wanted = min(n_bytes - n_read, max_read)
+                n_got = super(BufferedGzipFile, self).readinto(
+                    mv[n_read:n_read + n_wanted])
+                n_read += n_got
+                if n_got != n_wanted:
+                    break
+            return n_read
+
+
 def _gzip_open(fileish, *args, **kwargs):
-    # open gzip files with faster reads on large files using larger chunks
+    gzip_file = BufferedGzipFile(fileish, *args, **kwargs)
+
+    # Speedup for #209; attribute not present in in Python 3.5
+    # open gzip files with faster reads on large files using larger
     # See https://github.com/nipy/nibabel/pull/210 for discussion
-    gzip_file = gzip.open(fileish, *args, **kwargs)
-    gzip_file.max_read_chunk = GZIP_MAX_READ_CHUNK
+    if hasattr(gzip_file, 'max_chunk_read'):
+        gzip_file.max_read_chunk = GZIP_MAX_READ_CHUNK
+
     return gzip_file
 
 
@@ -149,39 +195,22 @@ class Opener(object):
 
 
 class ImageOpener(Opener):
-    """ Opener-type class passed to image classes to collect compressed extensions
+    """ Opener-type class to collect extra compressed extensions
 
-    This class allows itself to have image extensions added to its class
-    attributes, via the `register_ex_from_images`.  The class can therefore
-    change state when image classes are defined.
+    A trivial sub-class of opener to which image classes can add extra
+    extensions with custom openers, such as compressed openers.
+
+    To add an extension, add a line to the class definition (not __init__):
+
+        ImageOpener.compress_ext_map[ext] = func_def
+
+    ``ext`` is a file extension beginning with '.' and should be included in
+    the image class's ``valid_exts`` tuple.
+
+    ``func_def`` is a `(function, (args,))` tuple, where `function accepts a
+    filename as the first parameter, and `args` defines the other arguments
+    that `function` accepts. These arguments must be any (unordered) subset of
+    `mode`, `compresslevel`, and `buffering`.
     """
-
-    @classmethod
-    def register_ext_from_image(opener_klass, ext, func_def):
-        """Decorator for adding extension / opener_function associations.
-
-        Should be used to decorate classes.
-
-        Parameters
-        ----------
-        opener_klass : decorated class
-        ext : file extension to associate `func_def` with.
-          should start with '.'
-        func_def : opener function/parameter tuple
-          Should be a `(function, (args,))` tuple, where `function` accepts
-          a filename as the first parameter, and `args` defines the
-          other arguments that `function` accepts. These arguments must
-          be any (unordered) subset of `mode`, `compresslevel`,
-          and `buffering`.
-
-        Returns
-        -------
-        opener_klass, with a side-effect of updating the ImageOpener class
-        with the desired extension / opener association.
-        """
-        def decorate(klass):
-            assert ext not in opener_klass.compress_ext_map, \
-                "Cannot redefine extension-function mappings."
-            opener_klass.compress_ext_map[ext] = func_def
-            return klass
-        return decorate
+    # Add new extensions to this dictionary
+    compress_ext_map = Opener.compress_ext_map.copy()
